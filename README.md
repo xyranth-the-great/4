@@ -1,118 +1,114 @@
-# Laboratory 4-A — Role-Based Asset Transaction and Approval Management
+# Laboratory Asset & Service Management System
 
-A GitHub Pages front end (plain HTML/CSS/JS + the Supabase JS client) on
-top of a Supabase Postgres backend. All authorization — roles, the
-approval workflow, business rules, and the audit trail — is enforced in
-the database (Row Level Security + `SECURITY DEFINER` functions), and
-mirrored in the UI so people never see controls they can't use.
+**Role-Based Asset Transaction and Approval Management**
 
-## 1. Create the Supabase project
+A web application for managing laboratory equipment borrowing, built around three
+user roles, a five-stage approval workflow, and a full audit trail. Authorization
+is enforced twice — once in the interface, once in the database — so the rules
+hold even if someone bypasses the UI entirely.
 
-1. Go to [supabase.com](https://supabase.com) → New project. Note the
-   **Project URL** and **anon public key** (Settings → API).
-2. Settings → Authentication → Providers → Email: for a quick classroom
-   demo you can turn **off** "Confirm email" so new accounts can sign in
-   immediately. Leave it on if you want the confirmation-email flow.
-3. Open the **SQL Editor** and run, in order:
-   - `sql/schema.sql` — tables, enums, RLS policies, RPC functions, and
-     the `handle_new_user` trigger.
-   - `sql/seed.sql` — sample equipment rows (optional but recommended for
-     testing/screenshots).
+Built for **Systems Analysis and Design, Laboratory 4-A**, on GitHub Pages and
+Supabase.
 
-## 2. Point the app at your project
+---
 
-Edit `js/config.js`:
+## What it does
 
-```js
-export const SUPABASE_URL = "https://YOUR-PROJECT-REF.supabase.co";
-export const SUPABASE_ANON_KEY = "YOUR-ANON-PUBLIC-KEY";
+Laboratories lend equipment — cameras, tools, instruments — to staff and
+students. That process needs guardrails: not everyone should be able to approve
+their own request, release equipment that was never approved, or return the
+same item twice. This system encodes those guardrails directly into the data
+layer, not just the screens people see.
+
+- **Three roles** — Administrator, Laboratory Staff, and Requester/Viewer — each
+  with a different slice of the interface and a different set of permitted
+  actions.
+- **A seven-state approval workflow** — every borrowing request moves through
+  Pending → Approved/Rejected → Released → Returned/Overdue → Closed, and each
+  transition is a single atomic database operation.
+- **Ten enforced business rules** — from *"only available equipment may be
+  requested"* to *"a returned transaction can never be processed twice"* —
+  checked inside the database, not just hinted at in the UI.
+- **A complete audit trail** — every sensitive action (approvals, rejections,
+  releases, returns, role changes) writes an immutable log entry: who, what,
+  when.
+
+## Roles at a glance
+
+| Role | What they see and do |
+|---|---|
+| **Administrator** | Everything — manages users and their roles, approves or rejects requests, oversees maintenance, and is the only role that can read the audit log and system reports. |
+| **Laboratory Staff** | The operational layer — adds and edits equipment, creates and releases borrowing transactions, processes returns, and submits maintenance requests. |
+| **Requester / Viewer** | The everyday user — browses available equipment, submits borrowing requests, and tracks their own request history. |
+
+## The approval workflow
+
+```
+Submitted → Pending → Administrator Reviews
+                          ├─ Approved → Released → Returned → Closed
+                          └─ Rejected (dead end — cannot be released)
 ```
 
-The anon key is meant to be public — every table it touches is locked
-down by the RLS policies in `sql/schema.sql`.
+An Administrator can never approve or reject their own request, and equipment
+under maintenance is never eligible to be borrowed. Every step in this chain —
+including the automatic `Released → Overdue` sweep — is a `SECURITY DEFINER`
+Postgres function, so the state machine lives in the database rather than in
+scattered client-side checks.
 
-## 3. Create your first Administrator
+## Why the authorization is doubled
 
-New accounts always start as **Requester** (see `handle_new_user()` in
-the schema) — this stops a self-registering stranger from granting
-themselves Admin. Bootstrap your own Admin once:
+Most of this app's actual logic lives in ten PL/pgSQL functions guarded by Row
+Level Security — the front end calls them through `supabase.rpc(...)` and never
+writes to the sensitive tables directly:
 
-1. Open the deployed site (or `index.html` locally) → **Create account**
-   → sign up normally.
-2. In the Supabase SQL Editor:
-   ```sql
-   update profiles set role = 'admin' where email = 'you@example.com';
-   ```
-3. Sign back in. You now see the **Users** and **Audit Log** pages, and
-   can promote any other account from the **Users** page from now on —
-   no more manual SQL needed.
+- **Interface level** — role-aware navigation and page guards mean a Requester
+  never even sees an "Approve" button or a link to the Users page.
+- **Database level** — Row Level Security policies and the functions
+  themselves independently re-check the caller's role and the record's current
+  state, so a hand-crafted API call from outside the app is refused the same
+  way a stray click in the UI would be.
 
-## 4. Run locally / deploy to GitHub Pages
+This means the business rules hold regardless of which layer someone tries to
+go through.
 
-No build step — it's static HTML/CSS/JS.
+## Tech stack
 
-- **Locally:** serve the folder with any static server, e.g.
-  `python3 -m http.server 8080`, then open `http://localhost:8080`.
-  (Opening `index.html` directly via `file://` will not work — ES module
-  imports require an HTTP origin.)
-- **GitHub Pages:** push the entire project folder as-is, including the
-  `css/`, `js/`, `sql/`, and `docs/` folders. Do not upload only the top-
-  level HTML files or flatten the repo into one root directory, because the
-  app references assets like `./js/auth.js` and `./css/styles.css`.
-  Then go to Settings → Pages → Deploy from branch → pick the branch/root.
-  Your live URL will be `https://<username>.github.io/<repo>/`.
+| Layer | Technology |
+|---|---|
+| Frontend | Static HTML, CSS, and vanilla JavaScript (ES modules) |
+| Backend | [Supabase](https://supabase.com) — Postgres, Auth, Row Level Security, RPC functions |
+| Hosting | GitHub Pages (frontend) + Supabase (backend), no build step |
 
 ## Project structure
 
 ```
 index.html          Login
-register.html        Sign up (always creates a Requester)
-dashboard.html        Role-based overview
-equipment.html         Inventory, borrow requests, maintenance actions
-requests.html           The approval workflow: approve/reject/release/return
-users.html                Administrator only — role management
-audit.html                 Administrator only — audit trail
-css/styles.css        Design system
-js/
-  config.js            Supabase URL/key (edit this)
-  supabaseClient.js      Supabase client instance
-  auth.js                  Session + role route guards
-  nav.js                     Role-based sidebar
-  ui.js                        Toasts, modals, formatting helpers
-sql/
-  schema.sql             Tables, RLS, RPC functions (run first)
-  seed.sql                  Sample equipment + admin bootstrap note
-docs/
-  role_permission_matrix.md
-  business_rules.md
-  workflow_diagram.md
-  ERD_and_UseCase.md
-  test_plan.md
+register.html        Sign-up (new accounts always start as Requester)
+dashboard.html         Role-based overview
+equipment.html           Inventory, borrow requests, maintenance actions
+requests.html              The approval workflow — approve, reject, release, return
+users.html                   Administrator-only — role management
+audit.html                     Administrator-only — audit trail
+css/                              Design system
+js/                                 Auth guards, role-based navigation, Supabase client
+sql/                                  Schema, RLS policies, RPC functions, seed data
+docs/                                   ERD, use case diagram, role-permission matrix,
+                                          business rules, workflow diagram, test plan
 ```
 
-## How authorization is enforced at both levels
+## Documentation
 
-- **Interface level:** `js/auth.js#requireAuth(allowedRoles)` runs at the
-  top of every page, redirecting to login if there's no session and to
-  the dashboard (with a denied banner) if the role doesn't match.
-  `js/nav.js` also only renders links a role is allowed to use.
-- **Database level:** every write to `borrowing_requests`, `audit_logs`,
-  and user roles goes through a `SECURITY DEFINER` PL/pgSQL function
-  (`sql/schema.sql`, section 6) that independently re-checks the caller's
-  role and the record's current state, and RLS policies block any direct
-  table write that tries to skip those functions.
+- [`docs/ERD_and_UseCase.md`](docs/ERD_and_UseCase.md) — entity relationship and use case diagrams
+- [`docs/role_permission_matrix.md`](docs/role_permission_matrix.md) — the full role/action matrix
+- [`docs/workflow_diagram.md`](docs/workflow_diagram.md) — the approval state machine
+- [`docs/business_rules.md`](docs/business_rules.md) — all ten business rules and where each is enforced
+- [`docs/test_plan.md`](docs/test_plan.md) — functional test cases and results
 
-See `docs/business_rules.md` for exactly where each BR-A4-xx rule lives,
-and `docs/role_permission_matrix.md` for the full role/action matrix.
+## Course context
 
-## Submission checklist
-
-1. GitHub repository URL — your fork/push of this project.
-2. Live GitHub Pages URL — from step 4 above.
-3. Updated ERD and Use Case Diagram — `docs/ERD_and_UseCase.md`.
-4. Role-permission matrix — `docs/role_permission_matrix.md`.
-5. Workflow diagram — `docs/workflow_diagram.md`.
-6. Business rules — `docs/business_rules.md`.
-7. Audit-log screenshot — take one from `audit.html` after running a few
-   workflow actions.
-8. Functional test results — fill in `docs/test_plan.md`.
+| | |
+|---|---|
+| Course | Systems Analysis and Design |
+| Laboratory | 4-A — Role-Based Asset Transaction and Approval Management |
+| Development approach | Incremental / iterative |
+| Platform | GitHub + GitHub Pages + Supabase |
